@@ -1,0 +1,239 @@
+####################################
+#Start
+####################################
+
+####################################
+#import libraries
+####################################
+
+import numpy as np
+import pandas as pd
+
+####################################
+#import dataset
+####################################
+
+DATA_PATH = r'C:___________________.csv' #<insert your file path here
+
+df_raw = pd.read_csv(DATA_PATH)
+
+print("CHECK: SHAPE...")
+print("CHECK: ROW AND COLUMNS...", df_raw.shape)
+print("CHECK: COLUMN NAMES...")
+print(list(df_raw.columns))
+
+print("CHECK: DATA TYPE...")
+print(df_raw.dtypes)
+
+print("CHECK: Head...")
+print(df_raw.head(3))
+
+####################################
+#Checking for formatting errors
+####################################
+
+print("CHECK: FORMATTING")
+df = df_raw.copy()
+
+df.columns = df.columns.str.strip()
+
+raw_cols_with_ws = [c for c in df_raw.columns if c != c.strip()]
+print("FORMATTING: COLUMNS: REMOVING LEADING/TRAILING WHITESPACE")
+print(raw_cols_with_ws if raw_cols_with_ws else "None")
+
+obj_cols = df.select_dtypes(include=['object']).columns.tolist()
+suspect_numeric = []
+for c in obj_cols:
+    sample = df[c].dropna().astype(str).head(50)
+    if sample.str.contains(r"[\d\$\.,]", regex=True).mean() > 0.7:
+        suspect_numeric.append(c)
+
+print("FORMATTING: COLUMNS: OBJECTS THAT LOOK NUMERIC")
+print(suspect_numeric if suspect_numeric else "None")
+print("FORMATTING: COMPLETE")
+
+#####################################
+#Duplicates
+#####################################
+
+print("CHECK: DUPLICATES")
+
+full_row_dups = df.duplicated().sum()
+print("CHECK: FULL ROW DUPLICATES:", full_row_dups)
+
+if full_row_dups > 0:
+    dup_rows = df[df.duplicated(keep=False)]
+    print("\nSample duplicate rows (first 5):")
+    print(dup_rows.head())
+else:
+    print("CHECK: NO DUPLICATE ROWS FOUND")
+
+#####################################
+#Missing values
+#####################################
+
+print("CHECK: MISSING VALUES")
+missing_counts = df.isna().sum().sort_values(ascending=False)
+missing_pct = (df.isna().mean() * 100).round(2)
+missing_summary = pd.DataFrame({"missing_count": missing_counts, "missing_pct": missing_pct})
+print(missing_summary[missing_summary["missing_count"] > 0])
+
+######################################
+#Inconsistent check
+######################################
+
+print("CHECK: CONSISTENCY")
+
+cat_candidates = []
+for c in df.columns:
+    if df[c].dtype == "object":
+        nunique = df[c].nunique(dropna=True)
+        if nunique <= 50:  # adjust if needed
+            cat_candidates.append((c, nunique))
+
+cat_candidates = sorted(cat_candidates, key=lambda x: x[1])
+print("CHECK: CATEGORICAL CANDIDATES (column, #unique):")
+print(cat_candidates)
+
+for c, _ in cat_candidates[:10]:
+    vals = sorted(df[c].dropna().astype(str).unique())
+    print(f"\n{c} unique values ({len(vals)}):")
+    print(vals[:50])
+
+def normalize_label(value):
+    value = str(value).strip().lower()
+    value = value.replace("_", " ")
+    value = " ".join(value.split())
+    return value
+
+inconsistency_report = []
+for c, _ in cat_candidates:
+    series = df[c].dropna().astype(str)
+    normalized = series.map(normalize_label)
+
+    mapping = pd.DataFrame({"raw": series, "norm": normalized}).drop_duplicates()
+    collisions = mapping.groupby("norm")["raw"].nunique()
+    if (collisions > 1).any():
+        examples = mapping[mapping["norm"].isin(collisions[collisions > 1].head(5).index)]
+        inconsistency_report.append((c, examples.head(10)))
+
+print("\nCHECK: FORMATTING: INCONSISTENT LABEL")
+if not inconsistency_report:
+    print("CHECK: FORMATTING: NO OBVIOUS LABEL FORMAT COLLISIONS DETECTED")
+else:
+    for c, ex in inconsistency_report[:8]:
+        print(f"\nColumn: {c}")
+        print(ex)
+
+#####################################
+#Outliers
+#####################################
+
+print("CHECK: OUTLIERS")
+df_parsed = df.copy()
+for c in suspect_numeric:
+    cleaned = df_parsed[c].astype(str).str.replace(r"[\$,]", "", regex=True)
+    df_parsed[c] = pd.to_numeric(cleaned, errors="coerce")
+
+num_cols = df_parsed.select_dtypes(include=[np.number]).columns.tolist()
+print("CHECK: NUMERIC COLUMNS DETECTED", num_cols)
+
+summary = df_parsed[num_cols].describe(percentiles=[0.01, 0.05, 0.95, 0.99]).T
+print("CHECK: NUMERIC SUMMARY")
+print(summary)
+
+##################################
+#Non-negative
+##################################
+
+non_negative_fields = [
+    "Age", "Tenure", "Hours Weekly", "HoursWeekly",
+    "Annual Salary", "AnnualSalary",
+    "Driving Commuter Distance", "DrivingCommuterDistance",
+    "Annual Professional Development Hours", "AnnualProfessionalDevHrs",
+    "Number of Companies Worked", "NumCompaniesPreviouslyWorked"
+]
+
+print("ERROR: INVALID_COLUMN_NAMES")
+
+for f in non_negative_fields:
+    if f in df_parsed.columns and pd.api.types.is_numeric_dtype(df_parsed[f]):
+        neg_count = (df_parsed[f] < 0).sum()
+        if neg_count > 0:
+            print(f"- {f}: {neg_count} negatives (INVALID)")
+        else:
+            print(f"- {f}: 0 negatives")
+
+print("CHECK: INSPECTION: COMPLETE")
+
+####################################
+#Create a clean df
+####################################
+
+print("CREATING: COPY OF CLEANED DATA FRAME...")
+df_clean = df.copy()
+
+print("DROPING: DUPLICATE CLEANED DATA FRAME...")
+df_clean = df_clean.drop_duplicates()
+
+print("CONVERTING: NUMERIC LOOKING OBJECT COLUMNS")
+for c in suspect_numeric:
+    if c in df_clean.columns:
+        cleaned = df_clean[c].astype(str).str.replace(r"[\$,]", "", regex=True)
+        df_clean[c] = pd.to_numeric(cleaned, errors="coerce")
+
+print("REPLACING: NEGATIVES WITH NaN")
+non_negative_cols = [
+    "Age", "Tenure", "Hours Weekly", "Annual Salary",
+    "Driving Commuter Distance", "Annual Professional Development Hours",
+    "Number of Companies Worked"
+]
+for col in non_negative_cols:
+    if col in df_clean.columns and pd.api.types.is_numeric_dtype(df_clean[col]):
+        df_clean.loc[df_clean[col] < 0, col] = np.nan
+
+print("FILLING: NUMERIC VALUES WITH MEDIAN")
+num_cols = df_clean.select_dtypes(include=[np.number]).columns
+for col in num_cols:
+    df_clean[col] = df_clean[col].fillna(df_clean[col].median())
+
+print("FILLING: CATEGORICAL LABELS")
+cat_cols = df_clean.select_dtypes(include=["object"]).columns
+for col in cat_cols:
+    df_clean[col] = df_clean[col].fillna("Unknown")
+
+print("STANDARDIZE: CATEGORICAL LABELS")
+def standardize_text(val):
+    val = str(val).strip()
+    val = val.replace("_", " ")
+    val = " ".join(val.split())
+    return val
+
+for col in cat_cols:
+    df_clean[col] = df_clean[col].apply(standardize_text)
+
+####################################
+#Export data
+####################################
+
+print("EXPORTING DATA")
+
+import os
+
+folder = input("ENTER FILE PATH (PRESS ENTER FOR CURRENT FOLDER): ").strip()
+
+if folder == "":
+    folder = os.getcwd()
+
+os.makedirs(folder, exist_ok=True)
+
+export_path = os.path.join(folder, "Employee_Turnover_Cleaned.csv")
+
+df_clean.to_csv(export_path, index=False)
+
+print(f"FILE SAVED TO: {export_path}")
+print("SAVE SUCCESSFULLY!")
+
+####################################
+#END
+####################################
